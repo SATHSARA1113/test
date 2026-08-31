@@ -1,14 +1,12 @@
-# GOVDOC direct download — server fetch fixed
+# GovDoc direct-download final fix
 
-The previous "Failed to fetch / No papers found" issue was caused by trying to fetch GovDoc HTML directly from the Vercel server.
+This build fixes the "No papers found" problem caused by parsing GovDoc as HTML on a Vercel server.
 
-This version uses Jina Reader only to read GovDoc's public HTML pages, then follows the real GovDoc view -> download -> downloadFile flow.
-
-Student flow:
-Subject -> Medium -> real available years -> Download PDF
+It uses GovDoc's public medium page as the source, reads the page through a text reader, finds the real year -> `view?fid=...` link, then resolves the actual `/downloadFile/<id>` document and returns it through your Vercel site.
 
 Test:
 Physics -> Sinhala -> 2025 -> Download PDF
 Physics -> English -> 2024 -> Download PDF
 
-Vercel only. Do not open index.html with file://.
+Note:
+If GovDoc itself has a wrong or missing document for a year/medium, the site will refuse to return an unrelated PDF rather than giving students the wrong subject.

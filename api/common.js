@@ -7,47 +7,76 @@ const SUBJECTS={
 };
 const MEDIUMS={sinhala:"sinhala",english:"english",tamil:"tamil"};
 
-function collectionPage(subject,medium){
+function mediumPage(subject,medium){
   return `https://govdoc.lk/page/gce-advanced-level-exam-${SUBJECTS[subject]}-past-papers-${MEDIUMS[medium]}`;
 }
-async function fetchGovdoc(url){
-  // Jina Reader retrieves the public HTML as readable text even when the
-  // hosting provider refuses direct server-to-server HTML requests.
-  const jina=`https://r.jina.ai/http://${url.replace(/^https?:\/\//,"")}`;
-  const r=await fetch(jina,{headers:{"Accept":"text/plain","User-Agent":"AL-Past-Papers/1.0"}});
+async function reader(url){
+  const target=url.replace(/^https?:\/\//,"");
+  const r=await fetch(`https://r.jina.ai/http://${target}`,{
+    headers:{
+      "Accept":"text/plain",
+      "User-Agent":"Mozilla/5.0 AL-Past-Papers"
+    }
+  });
   if(!r.ok) throw new Error(`Source reader returned ${r.status}`);
   return r.text();
 }
-function extractYears(text){
-  const out=new Set();
-  for(const m of text.matchAll(/G\.C\.E\.\s*Advance Level Exam\s*((?:19|20)\d{2})/gi)) out.add(Number(m[1]));
-  // Reader markdown can omit punctuation.
-  for(const m of text.matchAll(/Advance Level Exam\s+((?:19|20)\d{2})/gi)) out.add(Number(m[1]));
-  return [...out].sort((a,b)=>b-a);
+
+function cleanUrl(u){
+  return u.replace(/[)>.,]+$/,"");
 }
-function extractViewUrl(text,year){
-  const lines=text.split(/\r?\n/);
+
+/*
+ Jina Reader normally turns GovDoc links into Markdown like:
+ G.C.E. Advance Level Exam 2024
+ [Download](https://govdoc.lk/view?fid=...&id=...)
+ We pair each year heading with the first nearby view?fid link.
+*/
+function extractYearViews(text){
+  const lines=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const out=[];
   for(let i=0;i<lines.length;i++){
-    if(new RegExp(`(?:^|\\D)${year}(?:\\D|$)`).test(lines[i])){
-      const windowText=lines.slice(i,Math.min(lines.length,i+8)).join("\n");
-      const m=windowText.match(/\((https?:\/\/govdoc\.lk\/view\?fid=[^) ]+)/i);
-      if(m)return m[1];
-      const m2=windowText.match(/https?:\/\/govdoc\.lk\/view\?fid=[^\s)]+/i);
-      if(m2)return m2[0];
+    const ym=lines[i].match(/G\.?C\.?E\.?\s*Advance Level Exam\s*((?:19|20)\d{2})/i)
+          || lines[i].match(/Advance Level Exam\s*((?:19|20)\d{2})/i);
+    if(!ym) continue;
+    const year=Number(ym[1]);
+    for(let j=i;j<Math.min(lines.length,i+12);j++){
+      const vm=lines[j].match(/\]\((https?:\/\/govdoc\.lk\/view\?fid=[^) ]+)/i)
+             || lines[j].match(/(https?:\/\/govdoc\.lk\/view\?fid=[^)\s]+)/i);
+      if(vm){
+        out.push({year,url:cleanUrl(vm[1])});
+        break;
+      }
+      if(j>i && /Advance Level Exam\s*(?:19|20)\d{2}/i.test(lines[j])) break;
     }
   }
-  const all=[...text.matchAll(/https?:\/\/govdoc\.lk\/view\?fid=[^\s)]+/gi)].map(x=>x[0]);
-  return all[0]||null;
+  const map=new Map();
+  for(const x of out) if(!map.has(x.year)) map.set(x.year,x.url);
+  return [...map.entries()].map(([year,url])=>({year,url})).sort((a,b)=>b.year-a.year);
 }
-export async function getYears(subject,medium){
-  const text=await fetchGovdoc(collectionPage(subject,medium));
-  return {years:extractYears(text),text};
+
+export async function getYearList(subject,medium){
+  if(!SUBJECTS[subject]||!MEDIUMS[medium]) throw new Error("Invalid subject or medium.");
+  const page=mediumPage(subject,medium);
+  const text=await reader(page);
+  const years=extractYearViews(text);
+  if(!years.length){
+    // Last-resort parser: find year and any view URL within a larger text window.
+    const found=new Map();
+    for(const m of text.matchAll(/(?:Advance Level Exam|Exam)\s*((?:19|20)\d{2})/gi)){
+      const year=Number(m[1]);
+      const window=text.slice(m.index,m.index+3000);
+      const v=window.match(/https?:\/\/govdoc\.lk\/view\?fid=[^)\s]+/i);
+      if(v&&!found.has(year)) found.set(year,cleanUrl(v[0]));
+    }
+    return [...found.entries()].map(([year,url])=>({year,url})).sort((a,b)=>b.year-a.year);
+  }
+  return years;
 }
 export async function resolveView(subject,year,medium){
-  const {years,text}=await getYears(subject,medium);
-  if(!years.includes(Number(year))) throw new Error(`GovDoc does not list ${year} for this medium.`);
-  const view=extractViewUrl(text,Number(year));
-  if(!view) throw new Error("Could not locate GovDoc's download page.");
-  return view;
+  const items=await getYearList(subject,medium);
+  const hit=items.find(x=>String(x.year)===String(year));
+  if(!hit) throw new Error(`GovDoc does not list ${year} for ${subject} in ${medium} medium.`);
+  return hit.url;
 }
-export {SUBJECTS,MEDIUMS,collectionPage,fetchGovdoc};
+export {SUBJECTS,MEDIUMS,mediumPage};
